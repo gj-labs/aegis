@@ -1,0 +1,13 @@
+{
+  "base_version_id": "01a122c0-a2bc-cf83-0000-9898793cda92",
+  "files": {
+    ".gitignore": "9ec436bde00ca28d03011a732c89677f412aaef8fc0f4fc5b5e8902e63c1a4ee",
+    "README.md": "f1c3d359f593b6715391bc295fa365deb5d38cc2bb6d798a3fc55b3f006b62f6",
+    "agent.ts": "3a5d4414aba6e463eb524ddc7adffccde4d1d525881c899e55c7d034f872d580",
+    "markdown.d.ts": "cdaec54eb4246610b0845308dd8654217473737918d98a705ee6fea313cf6f2c",
+    "package-lock.json": "2c18b49255ca06ec5a9992a093dcaacfc525cc23396e45a8f7450bcab0e0dd6a",
+    "package.json": "c129b4c0235882a31da327445158763242c02edea73313bbd4055f23af86c405",
+    "sample-incident.json": "67506c5039c04b58f53ac22c27e4ee0ed34fec3ed68f69683bc07f28b141cdd2",
+    "tsconfig.json": "4f38f0619b63f57f118cb08f6f46112fa14c1477e0febf508cd1300169823bfb"
+  }
+}
