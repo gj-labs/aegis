@@ -93,17 +93,9 @@ def sentinel_scan(ctx):
 
 
 # ---------------------------------------------------------------- Bloodhound
-def bloodhound_investigate(ctx, inc):
-    iid, ips = inc["id"], inc["ips"]
+def compromise_facts(ctx, ips):
+    """Accounts that logged in successfully from these IPs, and what those accounts did from other IPs."""
     p = {"ips": ips}
-    summ = rows(ctx.ch.query("""
-        SELECT min(ts) AS first_seen, max(ts) AS last_seen, count() AS total,
-               countIf(event_type='http' AND http_status=404) AS http_404,
-               uniqIf(http_path, http_status=404) AS distinct_paths,
-               countIf(event_type='login' AND success=0) AS login_fails,
-               uniqIf(user, event_type='login' AND success=0) AS users_targeted,
-               countIf(event_type='login' AND success=1) AS login_ok
-        FROM events WHERE ts >= now64(3) - INTERVAL 10 MINUTE AND has({ips:Array(String)}, src_ip)""", parameters=p))[0]
     comp = rows(ctx.ch.query("""
         SELECT user, any(host) AS host, min(ts) AS at FROM events
         WHERE ts >= now64(3) - INTERVAL 10 MINUTE AND has({ips:Array(String)}, src_ip)
@@ -120,6 +112,21 @@ def bloodhound_investigate(ctx, inc):
             FROM events WHERE ts >= now64(3) - INTERVAL 10 MINUTE AND has({users:Array(String)}, user)
               AND NOT has({ips:Array(String)}, src_ip)
             GROUP BY src_ip HAVING events >= 10 ORDER BY events DESC LIMIT 5""", parameters={"users": users, "ips": ips}))
+    return comp, users, related
+
+
+def bloodhound_investigate(ctx, inc):
+    iid, ips = inc["id"], inc["ips"]
+    p = {"ips": ips}
+    summ = rows(ctx.ch.query("""
+        SELECT min(ts) AS first_seen, max(ts) AS last_seen, count() AS total,
+               countIf(event_type='http' AND http_status=404) AS http_404,
+               uniqIf(http_path, http_status=404) AS distinct_paths,
+               countIf(event_type='login' AND success=0) AS login_fails,
+               uniqIf(user, event_type='login' AND success=0) AS users_targeted,
+               countIf(event_type='login' AND success=1) AS login_ok
+        FROM events WHERE ts >= now64(3) - INTERVAL 10 MINUTE AND has({ips:Array(String)}, src_ip)""", parameters=p))[0]
+    comp, users, related = compromise_facts(ctx, ips)
     facts = {"entity": inc["entity"], "source_ips": ips, "summary": summ, "successful_logins_from_entity": comp,
              "candidate_compromised_users": users, "candidate_related_ips": [r["src_ip"] for r in related],
              "activity_of_those_users_from_other_ips": related}
@@ -171,6 +178,14 @@ def blacksmith_remediate(ctx, inc, inv):
     payload = {"entity": inc["entity"], "source_ips": inc["ips"], "compromised_users": inv["compromised_users"],
                "related_internal_ips": inv["related_ips"], "stages": inv["stages"], "narrative": inv["narrative"]}
     out = ctx.llm.call("blacksmith", iid, SYS_BLACKSMITH, json.dumps(payload), max_tokens=450)
+    _, users2, related2 = compromise_facts(ctx, inc["ips"])          # facts may have changed since Bloodhound ran
+    new_users = [u for u in users2 if u not in inv["compromised_users"]]
+    new_ips = [r["src_ip"] for r in related2 if r["src_ip"] not in inv["related_ips"]]
+    if new_users or new_ips:
+        inv["compromised_users"] += new_users
+        inv["related_ips"] += new_ips
+        ctx.log("blacksmith", iid, f"re-check before blocking found {len(new_users)} newly compromised user(s) "
+                                   f"and {len(new_ips)} pivot host(s)")
     accepted, rejected = [], 0
     for r in (out or {}).get("rules", []):
         v = valid_rule(r, inc, inv)
@@ -208,23 +223,28 @@ def blacksmith_remediate(ctx, inc, inv):
                                  f"rules={len(accepted)} time_to_contain_s={ttc}")],
                   column_names=["incident_id", "entity", "verdict", "confidence", "stage", "summary"])
     ctx.log("blacksmith", iid, f"contained: rules applied {ttc}s after attack start")
-    rep = ctx.llm.call("blacksmith", iid, SYS_REPORT,
-                       json.dumps({**payload, "rules_applied": [f"{a[0]} {a[1]}" for a in accepted], "seconds_to_rules": ttc}),
-                       max_tokens=700)                                                  # report SECOND
-    measured = (f"\n\n## Measured facts (computed by code, not written by the model)\n"
-                f"- Rules applied: {len(accepted)} ({', '.join(a[0]+':'+a[1] for a in accepted)})\n"
-                f"- Time from attack start to rules applied: {ttc if ttc is not None else 'n/a'} s\n"
-                f"- Traffic is synthetic. Block is enforced by the simulated generator via the blocklist table.\n")
-    report = f"# Incident {iid}: {inc['entity']}\n\n" + str((rep or {}).get("report_markdown") or inv["narrative"]) + measured
-    os.makedirs("reports", exist_ok=True)
-    open(f"reports/{iid}.md", "w").write(report)
-    ctx.log("blacksmith", iid, f"incident report written (reports/{iid}.md)")
-    folder = os.environ.get("SENSO_FOLDER_ID")
-    if folder:
-        senso(["kb", "create-raw", "--data", json.dumps({"title": f"incident-{iid}.md", "text": report,
-                                                         "kb_folder_node_id": folder})])
-        ctx.log("blacksmith", iid, "incident saved to Senso memory")
-    return accepted, report
+    def finish():
+        """Write the incident report. Runs after containment, and only when Sentinel has nothing new to handle."""
+        data = {"entity": inc["entity"], "source_ips": inc["ips"], "compromised_users": inv["compromised_users"],
+                "related_internal_ips": inv["related_ips"], "stages": inv["stages"], "narrative": inv["narrative"],
+                "rules_applied": [f"{r[0]} {r[1]}" for r in accepted], "seconds_to_rules": ttc}
+        rep = ctx.llm.call("blacksmith", iid, SYS_REPORT, json.dumps(data), max_tokens=700)
+        measured = (f"\n\n## Measured facts (computed by code, not written by the model)\n"
+                    f"- Rules applied: {len(accepted)} ({', '.join(r[0]+':'+r[1] for r in accepted)})\n"
+                    f"- Time from attack start to rules applied: {ttc if ttc is not None else 'n/a'} s\n"
+                    f"- Traffic is synthetic. Block is enforced by the simulated generator via the blocklist table.\n")
+        report = f"# Incident {iid}: {inc['entity']}\n\n" + str((rep or {}).get("report_markdown") or inv["narrative"]) + measured
+        os.makedirs("reports", exist_ok=True)
+        open(f"reports/{iid}.md", "w").write(report)
+        ctx.log("blacksmith", iid, f"incident report written (reports/{iid}.md)")
+        folder = os.environ.get("SENSO_FOLDER_ID")
+        if folder:
+            senso(["kb", "create-raw", "--data", json.dumps({"title": f"incident-{iid}.md", "text": report,
+                                                             "kb_folder_node_id": folder})])
+            ctx.log("blacksmith", iid, "incident saved to Senso memory")
+        return report
+
+    return accepted, finish
 
 
 def handle(ctx, inc):

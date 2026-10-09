@@ -10,11 +10,16 @@ def main():
     ctx = Ctx(db.c, None, blocks)
     ctx.llm = Akash(ctx.log)
     print("AEGIS pipeline running. Waiting for threats...")
+    pending = []                       # incident reports, written once Sentinel has nothing new to handle
     while True:
         blocks.refresh()
         try:
-            for inc in sentinel_scan(ctx):
-                handle(ctx, inc)
+            incs = sentinel_scan(ctx)
+            for inc in incs:
+                pending.append(handle(ctx, inc)[1])
+            if not incs:
+                while pending:
+                    pending.pop(0)()
         except Exception as e:
             print("pipeline error:", repr(e))
         time.sleep(2)
