@@ -69,11 +69,11 @@ These come from a scripted attack on a ClickHouse Cloud service (tier: TODO(team
 
 **Akash.** All model inference runs on AkashML (`https://api.akashml.com/v1`, OpenAI-compatible) with `meta-llama/Llama-3.3-70B-Instruct`. Every call is logged with latency and token counts, and the dashboard's Akash panel shows model, endpoint, call count, average latency and tokens. If the model fails, the agents fall back to SQL-only facts and the log says so.
 
-**Guild.ai.** TODO(team): state exactly what was done. As of the last build the three agents are plain Python functions in `agents.py`, run by `pipeline.py`, and are not registered on Guild.
+**Guild.ai.** We published one agent on Guild, `garyjain5~aegis-incident-analyst` (version 1.0.1, validated), source in `guild/aegis-incident-analyst`. It takes an incident as JSON (facts from ClickHouse) and writes an incident report using only the facts in the input. We tested it on a made-up incident and the report was correct. **It is not wired into the live pipeline.** Sentinel, Bloodhound and Blacksmith are plain Python in `agents.py`, run by `pipeline.py`, and are not registered on Guild. Run the Guild agent with `guild agent test --workspace garyjain5~aegis-dev --mode json < sample-incident.json`. The command prints a "connection was aborted" message and exits 1, but the agent still finishes; the report is read with `guild session events <session-id>`.
 
-**Senso.** TODO(team): state whether it was used. `agents.py` contains an optional hook that saves each incident report to Senso and lets Bloodhound search past incidents, and it only runs if `SENSO_FOLDER_ID` is set in `.env`.
+**Senso.** Blacksmith saves every incident report to a Senso knowledge-base folder (`senso kb create-raw`), and the log prints `incident saved to Senso memory` only when the CLI call succeeded. Bloodhound also searches Senso for similar past incidents before it investigates; the search is optional and only runs if `SENSO_FOLDER_ID` is set in `.env`. TODO(team): add whether the search found a past incident in a later run. Until then, treat recall as unverified.
 
-**Semgrep.** TODO(team): state whether Guardian or a scan was run on this repo, and list real findings and fixes. Do not leave this section as a claim without results.
+**Semgrep.** We ran Semgrep on the five Python files (655 lines): `dashboard.py`, `agents.py`, `generator.py`, `db.py`, `llm.py`. `--config auto` (290 community Python rules) plus `p/python`, `p/secrets` and `p/sql-injection` gave **0 findings and 0 errors**. These were free community rules only, since Semgrep was not logged in, so the cross-file data-flow rules (Pro) did not run. The scan ran after the code was written, so it did not shape the code.
 
 **Pi.** Prize sponsor only, no integration. Our entry is the closed loop: detection, investigation and remediation without a human, instead of another detector.
 
