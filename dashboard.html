@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AEGIS</title>
+<style>
+:root{--bg:#0f1419;--panel:#171d24;--line:#26303a;--ink:#e6edf3;--mute:#8b9aa8;--ok:#3fb9a8;--bad:#ff5d4d;--warn:#f0b429;--blue:#5aa9ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{margin:0;font-size:20px;letter-spacing:.02em}.sub{color:var(--mute);font-size:12px}
+.pill{padding:5px 12px;border-radius:14px;font-weight:700;font-size:13px;background:var(--line)}
+.pill.calm{background:#16352f;color:var(--ok)}.pill.attack{background:#4a1d19;color:var(--bad);animation:p 1s infinite}
+.pill.contained{background:#16352f;color:var(--ok)}.pill.timeout{background:#4a1d19;color:var(--bad)}
+@keyframes p{50%{opacity:.55}}@media(prefers-reduced-motion:reduce){.pill.attack{animation:none}}
+.sp{flex:1}button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 14px;cursor:pointer}
+button.go{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:700}button:disabled{opacity:.5;cursor:default}
+button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.stats{display:flex;gap:12px;padding:14px 20px;flex-wrap:wrap}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 16px;min-width:150px}
+.stat b{display:block;font-size:26px;font-variant-numeric:tabular-nums}.stat span{color:var(--mute);font-size:12px}
+.stat.hot b{color:var(--ok)}
+main{display:grid;grid-template-columns:1.2fr 1fr;gap:12px;padding:0 20px 20px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.card h2{margin:0 0 8px;font-size:14px;display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.badge{font-size:11px;font-weight:600;color:var(--ok);background:#16352f;border-radius:10px;padding:2px 9px;white-space:nowrap}
+canvas{width:100%;height:150px;display:block}
+table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}th{color:var(--mute);font-weight:600}
+.feed{max-height:420px;overflow:auto;font-size:12.5px}.line{padding:4px 0;border-bottom:1px solid var(--line)}
+.tag{display:inline-block;min-width:78px;font-weight:700}.sentinel{color:var(--blue)}.bloodhound{color:var(--warn)}.blacksmith{color:var(--bad)}
+.m{color:var(--mute);font-size:11px}.empty{color:var(--mute);padding:6px 0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}.kv span:nth-child(odd){color:var(--mute)}
+footer{color:var(--mute);font-size:12px;padding:0 20px 20px}
+</style></head><body>
+<header><div><h1>AEGIS</h1><div class="sub">the SOC that fights back</div></div><span id="pill" class="pill calm">CALM</span><div class="sp"></div>
+<button id="scan">Scan all events</button><button id="reset">Reset</button><button id="go" class="go">Launch attack</button></header>
+<div class="stats">
+<div class="stat"><b id="total">-</b><span>events in ClickHouse</span></div>
+<div class="stat"><b id="rate">-</b><span>events/s (last 5 s)</span></div>
+<div class="stat hot"><b id="rule">-</b><span>seconds: attack start to rule applied</span></div>
+<div class="stat hot"><b id="stop">-</b><span>seconds: attack start to traffic stopped</span></div>
+</div>
+<main><div>
+<div class="card"><h2>Failed logins per 10 s <span class="badge" id="b1"></span></h2><canvas id="cv" width="800" height="150"></canvas></div>
+<div class="card"><h2>Top suspicious sources, last 2 min <span class="badge" id="b2"></span></h2>
+<table><thead><tr><th>source</th><th>login fails</th><th>users hit</th><th>NXDOMAIN</th><th>HTTP 404</th><th>hosts authed</th><th>score</th></tr></thead><tbody id="t2"></tbody></table></div>
+<div class="card"><h2>Blocklist (written by Blacksmith)</h2><table><thead><tr><th>kind</th><th>value</th><th>reason</th></tr></thead><tbody id="bl"></tbody></table></div>
+</div><div>
+<div class="card"><h2>Agent feed</h2><div class="feed" id="feed"></div></div>
+<div class="card"><h2>Inference on AkashML</h2><div class="kv" id="ak"></div></div>
+<div class="card"><h2>Full scan <span class="badge" id="b3" style="display:none"></span></h2><div class="m" id="scanmsg">Press "Scan all events" to aggregate every row.</div></div>
+</div></main>
+<footer>All traffic is synthetic. Blocks are enforced by the simulated traffic generator through the blocklist table.</footer>
+<script>
+const $=id=>document.getElementById(id);
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e};
+const fmt=n=>Number(n).toLocaleString();
+const badge=m=>(m.server_ms!=null?m.server_ms+' ms server · ':'')+m.round_trip_ms+' ms round trip · '+fmt(m.scanned)+' rows scanned';
+function chart(rows){const cv=$('cv'),g=cv.getContext('2d');g.clearRect(0,0,cv.width,cv.height);
+ const v=rows.map(r=>+r.failed),mx=Math.max(10,...v),w=cv.width/Math.max(v.length,1);const base=[...v].sort((a,b)=>a-b)[Math.floor(v.length/2)]||0,hot=Math.max(3*base,400);
+ v.forEach((x,i)=>{const h=x/mx*(cv.height-18);g.fillStyle=x>hot?'#ff5d4d':'#3fb9a8';g.fillRect(i*w+1,cv.height-h,w-2,h)});
+ g.fillStyle='#8b9aa8';g.font='11px system-ui';g.fillText('max '+mx+' per 10 s',6,12)}
+function rowsTo(tb,data,cols,empty){tb.replaceChildren();if(!data.length){const tr=el('tr'),td=el('td','empty',empty);td.colSpan=cols.length;tr.append(td);tb.append(tr);return}
+ data.forEach(d=>{const tr=el('tr');cols.forEach(c=>tr.append(el('td','',d[c])));tb.append(tr)})}
+async function tick(){
+ try{const s=await (await fetch('/api/state')).json();
+  $('total').textContent=fmt(s.total);$('rate').textContent=fmt(Math.round(s.rate));
+  $('rule').textContent=s.rule_s!=null?s.rule_s:'-';$('stop').textContent=s.stop_s!=null?s.stop_s:'-';
+  const p=$('pill');p.className='pill '+s.status;p.textContent={calm:'CALM',attack:'UNDER ATTACK',contained:'THREAT NEUTRALIZED',timeout:'NOT CONTAINED'}[s.status];
+  $('go').disabled=s.status==='attack';
+  chart(s.q1.rows);$('b1').textContent=badge(s.q1);$('b2').textContent=badge(s.q2);
+  rowsTo($('t2'),s.q2.rows.slice(0,8),['src_ip','login_fails','users_targeted','nxdomain','http_404','hosts_authed','score'],'No suspicious sources');
+  rowsTo($('bl'),s.blocklist,['kind','value','reason'],'No active blocks');
+  const f=$('feed');f.replaceChildren();if(!s.feed.length)f.append(el('div','empty','Waiting for threats. Start pipeline.py.'));
+  s.feed.slice().reverse().forEach(x=>{const d=el('div','line');d.append(el('span','tag '+x.agent,x.agent));
+   d.append(document.createTextNode(x.message));if(+x.latency_ms)d.append(el('span','m','  '+x.latency_ms+' ms, '+x.tokens_in+'+'+x.tokens_out+' tok'));f.append(d)});
+  f.scrollTop=f.scrollHeight;
+  const a=s.akash,k=$('ak');k.replaceChildren();[['model',a.model],['endpoint',a.endpoint],['calls',a.calls],['avg latency',(a.avg_ms||0)+' ms'],['tokens',fmt((+a.tin||0)+(+a.tout||0))]].forEach(([x,y])=>{k.append(el('span','',x),el('span','',y))});
+ }catch(e){$('pill').textContent='DISCONNECTED'}
+}
+$('go').onclick=async()=>{$('go').disabled=true;await fetch('/api/attack',{method:'POST'})};
+$('reset').onclick=async()=>{await fetch('/api/reset',{method:'POST'});tick()};
+$('scan').onclick=async()=>{$('scanmsg').textContent='Scanning...';const r=await (await fetch('/api/scan')).json();
+ const b=$('b3');b.style.display='';b.textContent=badge(r);$('scanmsg').textContent='Aggregated '+fmt(r.scanned)+' events into '+r.buckets+' five-minute buckets.'};
+tick();setInterval(tick,1500);
+</script></body></html>
