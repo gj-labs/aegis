@@ -49,7 +49,7 @@ class Ctx:
 def senso(args, timeout=8):
     try:
         r = subprocess.run(["senso"] + args, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip() if r.returncode == 0 else None
+        return (r.stdout.strip() or "ok") if r.returncode == 0 else None
     except Exception:
         return None
 
@@ -132,6 +132,8 @@ def bloodhound_investigate(ctx, inc):
              "activity_of_those_users_from_other_ips": related}
     memory = senso(["search", f"incident kill chain {len(ips)} sources password spray lateral movement dns exfil"]) \
         if os.environ.get("SENSO_FOLDER_ID") else None
+    if memory and "no results found" in memory.lower():
+        memory = None
     if memory:
         facts["past_incident_memory_from_senso"] = memory[:600]
         ctx.log("bloodhound", iid, "Senso memory consulted: similar past incident found")
@@ -239,9 +241,9 @@ def blacksmith_remediate(ctx, inc, inv):
         ctx.log("blacksmith", iid, f"incident report written (reports/{iid}.md)")
         folder = os.environ.get("SENSO_FOLDER_ID")
         if folder:
-            senso(["kb", "create-raw", "--data", json.dumps({"title": f"incident-{iid}.md", "text": report,
-                                                             "kb_folder_node_id": folder})])
-            ctx.log("blacksmith", iid, "incident saved to Senso memory")
+            ok = senso(["kb", "create-raw", "--data", json.dumps({"title": f"incident-{iid}.md", "text": report,
+                                                                  "kb_folder_node_id": folder})], timeout=20)
+            ctx.log("blacksmith", iid, "incident saved to Senso memory" if ok else "Senso save failed (continuing)")
         return report
 
     return accepted, finish

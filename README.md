@@ -48,16 +48,20 @@ Server time is what ClickHouse reports for the query. Round trip is what the cli
 
 ### Time to contain (measured, synthetic attack)
 
-"Rule applied" is the time from attack start to the first block rule in the `blocklist` table. "Traffic stopped" is when the generator stopped because the sources were blocked.
+"First rule" is the time from attack start to the first block rule in the `blocklist` table. "Traffic stopped" is when the generator stopped because the sources were blocked. Run times are approximate Pacific times.
 
-| Run | Rule applied | Traffic stopped | Incidents |
-|---|---|---|---|
-| 1 | 15.2 s | 15.7 s | 2 (a duplicate cleanup incident, fixed afterwards) |
-| 2 | 16.0 s | 16.7 s | 1 |
-| 3 | TODO(team) | TODO(team) | TODO(team) |
-| 4 | TODO(team) | TODO(team) | TODO(team) |
+| Run | Time | Code | First rule | Traffic stopped | Incidents |
+|---|---|---|---|---|---|
+| 1 | about 2:31 PM | policy floor | 15.2 s | 15.7 s | 2 (second was cleanup after traffic had stopped) |
+| 2 | about 2:36 PM | plus 3 s staleness window | 16.0 s | 16.7 s | 1 |
+| 3 | 2:39 PM | same as run 2 | 9.5 s | 40.2 s | 2 |
+| 4 | 2:40 PM | same as run 2 | 13.6 s | 36.2 s | 2 |
+| 5 | about 3:00 PM | same as run 2 | 11.2 s | not recorded | 2 (second rule at 28.8 s) |
+| 6 | about 3:02 PM | plus re-check before blocking, deferred reports | 18.8 s | not recorded | 1 |
 
-Median: TODO(team). These come from a scripted attack on a ClickHouse Cloud service (tier: TODO(team)), so treat them as a demo measurement, not a benchmark.
+Over the four runs where we recorded it, traffic stopped in **15.7 to 40.2 s (median 26.5 s)**. In runs 3 to 5 Sentinel detected the attack before the account compromise showed up in the data, so the first incident blocked only the external range. The internal pivot host then needed a second incident, and one Akash call in that investigation took 17.6 s. Run 6 is the first on the code that re-checks for a compromised account right before blocking, and it put all three rules into a single incident. We have only one run on that code, so treat it as preliminary: TODO(team) add any later runs here.
+
+These come from a scripted attack on a ClickHouse Cloud service (tier: TODO(team)), so treat them as a demo measurement, not a benchmark.
 
 ## How each sponsor is used
 
@@ -78,6 +82,8 @@ Median: TODO(team). These come from a scripted attack on a ClickHouse Cloud serv
 - **SQL does the scale work, the model does the judgment.** An LLM cannot score millions of events. ClickHouse reduces recent events to a handful of candidate sources, and the model only sees those.
 - **The model proposes, code disposes.** Block rules from the model pass deterministic checks: external ranges no wider than /24, internal addresses only as exact /32, and a user is disabled only if the timeline confirmed it as compromised. Invented users or overbroad ranges are rejected.
 - **A policy floor.** In early runs the model sometimes returned only the attacker CIDR and skipped disabling the compromised account, so the attack continued through the pivot host. Code now adds any confirmed compromised user or related pivot host the model left out, and the log says `policy floor added N rule(s) the model omitted`.
+- **Re-check before blocking.** Blacksmith re-runs the compromised-account query right before it writes rules, so an account that was compromised after Bloodhound looked is still blocked in the same incident. The log line is `re-check before blocking found N newly compromised user(s)`.
+- **Reports wait for quiet.** Incident reports are written once Sentinel has nothing new to handle, so a slow report call never delays detecting the next incident.
 - **Contain first, report second.** The report call happens after the rules are applied, which cut time-to-rules from about 35 s to about 16 s in our runs.
 - **Ground-truth labels are never used for detection.** `events.is_attack` exists only for scoring and cleanup.
 
